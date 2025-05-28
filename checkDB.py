@@ -14,5 +14,5 @@ def check_user_status(username):
         print(f"Public Key: {user.P[:10]}... ({len(user.P)} bytes)")
 
 if __name__ == "__main__":
-    username_to_check = "alice1"
+    username_to_check = "you"
     check_user_status(username_to_check)
