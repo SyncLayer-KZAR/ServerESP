@@ -1,6 +1,6 @@
-from app import db, User, MigrationRequest, app  # Include MigrationRequest
+from app import db, User, MigrationRequest, app
 import base64
-from datetime import datetime
+from datetime import datetime, timezone # Use timezone-aware datetime
 import hashlib
 
 def check_user_status(username):
@@ -25,25 +25,32 @@ def check_migration_requests(username):
             return
         print(f"\n=== 📲 MIGRATION REQUESTS for {username} ===")
         for m in migrations:
-            expired = "✅" if m.expires_at > datetime.utcnow() else "❌ (expired)"
+            # Use timezone-aware datetime for comparison
+            expired = "✅" if m.expires_at.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc) else "❌ (expired)"
             print(f"PIN: {m.pin} | Expires: {m.expires_at} {expired}")
-            print(f"Public Key (first 10 bytes): {base64.b64encode(m.public_key[:20]).decode()}... (len={len(m.public_key)} bytes)")
-            if m.encrypted_secret:
-                print(f"Encrypted Secret Present ✅ (len={len(m.encrypted_secret)} bytes)")
+            print(f"Public Key (first 20 bytes): {base64.b64encode(m.public_key[:20]).decode()}... (len={len(m.public_key)} bytes)")
+            
+            # --- CORRECTED LINE ---
+            # Check for the 'encrypted_data' attribute, not 'encrypted_secret'
+            if m.encrypted_data:
+                print(f"Encrypted Data Present ✅ (len={len(m.encrypted_data)} bytes)")
             else:
-                print(f"Encrypted Secret: ❌ Not set yet")
+                print(f"Encrypted Data: ❌ Not set yet")
             print("----------------------------------")
 
+            # This hashing check is a great idea for debugging!
             user = User.query.filter_by(username=username).first()
-            user_pub_hash = hashlib.sha256(user.P).hexdigest()
-            migration_pub_hash = hashlib.sha256(m.public_key).hexdigest()
+            if user:
+                user_pub_hash = hashlib.sha256(user.P).hexdigest()
+                migration_pub_hash = hashlib.sha256(m.public_key).hexdigest()
 
-            print(f"User.P   SHA256: {user_pub_hash}")
-            print(f"P2 (dest) SHA256: {migration_pub_hash}")
+                print(f"User.P   SHA256: {user_pub_hash[:10]}...")
+                print(f"P2 (dest) SHA256: {migration_pub_hash[:10]}...")
 
         print("======================================\n")
 
 if __name__ == "__main__":
-    username_to_check = "zak1"
+    # Make sure to re-register this user after deleting the DB
+    username_to_check = "zak" 
     check_user_status(username_to_check)
     check_migration_requests(username_to_check)
