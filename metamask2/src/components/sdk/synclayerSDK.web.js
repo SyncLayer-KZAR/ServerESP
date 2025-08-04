@@ -1,8 +1,5 @@
-// src/components/sdk/synclayerSDK.web.js
-// This version uses a singleton pattern for the DB connection to prevent race conditions.
 import { openDB } from 'idb';
 
-// ==== Configuration ====
 const DB_NAME = 'SyncLayerDB';
 const DB_VERSION = 1;
 const KEY_STORE_NAME = 'keys';
@@ -10,21 +7,13 @@ const E_S_STORAGE_KEY = 'synclayer_E_S';
 const S2_STORAGE_KEY = 'synclayer_S2';
 const BACKEND_URL = 'http://localhost:5050';
 
-// ==== NEW: Singleton DB Connection ====
-// This `dbPromise` variable will hold the single, shared connection promise.
 let dbPromise = null;
 
-/**
- * Gets a reference to the IndexedDB database using a singleton pattern.
- * This prevents race conditions by ensuring only one connection process happens at a time.
- * @returns {Promise<IDBDatabase>} A promise that resolves to the database instance.
- */
 function getDb() {
-  // If the promise doesn't exist yet, create it.
   if (!dbPromise) {
     console.log("No DB promise found, creating a new one.");
     dbPromise = openDB(DB_NAME, DB_VERSION, {
-      upgrade(db, oldVersion, newVersion, transaction) {
+      upgrade(db, oldVersion, newVersion) {
         console.log(`Upgrading IndexedDB from version ${oldVersion} to ${newVersion}...`);
         if (!db.objectStoreNames.contains(KEY_STORE_NAME)) {
           console.log(`Object store '${KEY_STORE_NAME}' not found, creating it now.`);
@@ -36,24 +25,26 @@ function getDb() {
       },
       blocking() {
         console.warn("IndexedDB connection is blocking a newer version. Closing the connection.");
-        // This is a good practice to close the old connection if a new version is needed.
-        if(dbPromise) {
-            dbPromise.close();
-        }
+        if (dbPromise) dbPromise.close();
       },
       terminated() {
-         console.error("IndexedDB connection was terminated unexpectedly. Resetting promise.");
-         // Reset the promise to allow for reconnection attempts.
-         dbPromise = null;
+        console.error("IndexedDB connection was terminated unexpectedly. Resetting promise.");
+        dbPromise = null;
       }
     });
   }
-  // Always return the same, single promise.
   return dbPromise;
 }
 
+async function init() {
+  try {
+    await getDb();
+    console.log("✅ SDK initialized: IndexedDB is ready.");
+  } catch (e) {
+    console.error("SDK init error:", e);
+  }
+}
 
-// ==== IndexedDB Helper Functions (now using the singleton) ====
 async function saveToDb(key, value) {
   const db = await getDb();
   await db.put(KEY_STORE_NAME, value, key);
@@ -67,9 +58,8 @@ async function getFromDb(key) {
 async function deleteFromDb(key) {
   try {
     const db = await getDb();
-    // This check prevents an error if the object store doesn't exist yet.
     if (!db.objectStoreNames.contains(KEY_STORE_NAME)) {
-      return; 
+      return;
     }
     await db.delete(KEY_STORE_NAME, key);
   } catch (err) {
@@ -78,7 +68,6 @@ async function deleteFromDb(key) {
   }
 }
 
-// ==== Crypto Helper Functions (unchanged) ====
 function arrayBufferToBase64(buffer) {
   let binary = '';
   const bytes = new Uint8Array(buffer);
@@ -87,6 +76,7 @@ function arrayBufferToBase64(buffer) {
   }
   return window.btoa(binary);
 }
+
 function base64ToArrayBuffer(base64) {
   const binary_string = window.atob(base64);
   const len = binary_string.length;
@@ -97,9 +87,23 @@ function base64ToArrayBuffer(base64) {
   return bytes.buffer;
 }
 
-
-// ==== SDK Public Methods (now using direct helper functions) ====
 const SynclayerSDK = {
+  async init() {
+    return init();
+  },
+
+  async getDb() {
+    return getDb();
+  },
+
+  async saveEncryptedSecret(E_S_base64) {
+    await saveToDb(E_S_STORAGE_KEY, E_S_base64);
+  },
+
+  async loadEncryptedSecret() {
+    return await getFromDb(E_S_STORAGE_KEY);
+  },
+
   async register(username, password) {
     try {
       await deleteFromDb(S2_STORAGE_KEY);
@@ -113,7 +117,7 @@ const SynclayerSDK = {
         throw new Error(error.error || 'Registration failed');
       }
       const { E_S } = await res.json();
-      await saveToDb(E_S_STORAGE_KEY, E_S);
+      await this.saveEncryptedSecret(E_S);
       return true;
     } catch (err) {
       console.error('Registration failed:', err);
@@ -123,7 +127,7 @@ const SynclayerSDK = {
 
   async login(username, password) {
     try {
-      const E_S = await getFromDb(E_S_STORAGE_KEY);
+      const E_S = await this.loadEncryptedSecret();
       if (!E_S) {
         throw new Error('Missing E_S from device storage. Cannot log in.');
       }
@@ -137,7 +141,7 @@ const SynclayerSDK = {
         throw new Error(error.error || 'Login failed');
       }
       const { E_S: new_E_S } = await res.json();
-      await saveToDb(E_S_STORAGE_KEY, new_E_S);
+      await this.saveEncryptedSecret(new_E_S);
       return true;
     } catch (err) {
       console.error('Login failed:', err);
@@ -155,14 +159,14 @@ const SynclayerSDK = {
       const privateKeyS2 = await window.crypto.subtle.exportKey('pkcs8', keyPair.privateKey);
       const publicKeyP2 = await window.crypto.subtle.exportKey('spki', keyPair.publicKey);
       await saveToDb(S2_STORAGE_KEY, privateKeyS2);
-      const FIVE_MINUTES_IN_MS = 5 * 60 * 1000;
       setTimeout(async () => {
         try {
           await deleteFromDb(S2_STORAGE_KEY);
         } catch (err) {
           console.error('Failed to auto-delete S2 key after timeout:', err);
         }
-      }, FIVE_MINUTES_IN_MS);
+      }, 5 * 60 * 1000); // 5 minutes
+
       const P2_b64 = arrayBufferToBase64(publicKeyP2);
       const res = await fetch(`${BACKEND_URL}/start_migration`, {
         method: 'POST',
@@ -189,11 +193,12 @@ const SynclayerSDK = {
       }
       const { P2: P2_b64 } = await pubKeyRes.json();
       const P2_ab = base64ToArrayBuffer(P2_b64);
-      const E_S_b64 = await getFromDb(E_S_STORAGE_KEY);
+      const E_S_b64 = await this.loadEncryptedSecret();
       if (!E_S_b64) {
         throw new Error('Local secret (E_S) not found on this device.');
       }
       const E_S_ab = base64ToArrayBuffer(E_S_b64);
+
       const P2_key = await window.crypto.subtle.importKey(
         'spki', P2_ab, { name: 'ECDH', namedCurve: 'P-256' }, true, []
       );
@@ -205,7 +210,7 @@ const SynclayerSDK = {
       );
       const iv = window.crypto.getRandomValues(new Uint8Array(12));
       const encrypted_E_S = await window.crypto.subtle.encrypt(
-        { name: 'AES-GCM', iv: iv },
+        { name: 'AES-GCM', iv },
         await window.crypto.subtle.importKey('raw', sharedSecret, 'AES-GCM', false, ['encrypt']),
         E_S_ab
       );
@@ -214,6 +219,7 @@ const SynclayerSDK = {
       finalPayload.set(new Uint8Array(ephemeralPubKey_ab), 0);
       finalPayload.set(iv, ephemeralPubKey_ab.byteLength);
       finalPayload.set(new Uint8Array(encrypted_E_S), ephemeralPubKey_ab.byteLength + iv.byteLength);
+
       const res = await fetch(`${BACKEND_URL}/complete_migration`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -245,26 +251,32 @@ const SynclayerSDK = {
       const payload_ab = base64ToArrayBuffer(encrypted_data);
       const S2_ab = await getFromDb(S2_STORAGE_KEY);
       if (!S2_ab) {
-        throw new Error('Destination device private key (S2) not found. The key may have expired (5-minute window) or was not set. Please restart the migration on this device.');
+        throw new Error('Destination device private key (S2) not found. It may have expired.');
       }
+
       const S2_key = await window.crypto.subtle.importKey(
         'pkcs8', S2_ab, { name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey', 'deriveBits']
       );
+
       const ephemeralPubKey_ab = payload_ab.slice(0, 65);
-      const iv = payload_ab.slice(65, 65 + 12);
-      const ciphertext = payload_ab.slice(65 + 12);
+      const iv = payload_ab.slice(65, 77);
+      const ciphertext = payload_ab.slice(77);
+
       const ephemeralPubKey = await window.crypto.subtle.importKey(
         'raw', ephemeralPubKey_ab, { name: 'ECDH', namedCurve: 'P-256' }, true, []
       );
+
       const sharedSecret = await window.crypto.subtle.deriveBits(
         { name: 'ECDH', public: ephemeralPubKey }, S2_key, 256
       );
+
       const E_S_ab = await window.crypto.subtle.decrypt(
-        { name: 'AES-GCM', iv: iv },
+        { name: 'AES-GCM', iv },
         await window.crypto.subtle.importKey('raw', sharedSecret, 'AES-GCM', false, ['decrypt']),
         ciphertext
       );
-      await saveToDb(E_S_STORAGE_KEY, arrayBufferToBase64(E_S_ab));
+
+      await this.saveEncryptedSecret(arrayBufferToBase64(E_S_ab));
       await deleteFromDb(S2_STORAGE_KEY);
       return { success: true };
     } catch (err) {
@@ -273,13 +285,30 @@ const SynclayerSDK = {
       }
       throw err;
     }
+  },
+
+  async debugGetDbSnapshot() {
+    try {
+      const db = await getDb();
+      let E_S = 'Not Set', S2 = 'Not Set';
+
+      const e_s = await db.get(KEY_STORE_NAME, E_S_STORAGE_KEY);
+      const s2 = await db.get(KEY_STORE_NAME, S2_STORAGE_KEY);
+
+      if (e_s) E_S = e_s.substring(0, 25) + '...';
+      if (s2) S2 = 'Present';
+
+      return { E_S, S2 };
+    } catch (err) {
+      console.error('Error getting DB snapshot for debug:', err);
+      return { E_S: 'Error', S2: 'Error' };
+    }
   }
 };
 
-// --- This ensures the SDK is available globally when the script is loaded in a browser ---
+// Global export
 if (typeof window !== 'undefined') {
   window.SynclayerSDKWeb = SynclayerSDK;
 }
 
-// --- This ensures the module can still be imported in a modern JS environment (like the original project) ---
 export default SynclayerSDK;
