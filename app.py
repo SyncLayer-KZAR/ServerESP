@@ -7,6 +7,7 @@ from Crypto.Random import get_random_bytes
 import base64
 import string
 import random
+import secrets
 from datetime import datetime, timedelta, timezone
 import traceback # Import traceback for better error logging
 
@@ -52,9 +53,15 @@ def generate_keypair():
     public_key = key.public_key().export_key(format='DER')
     return private_key, public_key
 
-def generate_pin(length=6):
-    chars = string.ascii_uppercase + string.digits
-    return ''.join(random.choices(chars, k=length))
+def generate_pin():
+    """Generates a secure 8-character alphanumeric + special characters PIN."""
+    # Define the character set
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+    
+    # Generate an 8-character PIN
+    pin = ''.join(secrets.choice(alphabet) for i in range(8))
+    
+    return pin
 
 # ===================== Routes =====================
 @app.route('/register', methods=['POST'])
@@ -80,29 +87,47 @@ def register():
         traceback.print_exc()
         return jsonify({'error': f'An internal server error occurred: {e}'}), 500
 
+
 @app.route('/login', methods=['POST'])
 def login():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+    E_S_prime_b64 = data.get('E_S')
+
+    # Find the user by username and password. We need the user object for the key 'E'.
+    user = User.query.filter_by(username=username, password=password).first()
+
+    # If no user matches the credentials, it's a simple invalid login.
+    if not user:
+        return jsonify({'error': 'Invalid username or password'}), 401
+
     try:
-        data = request.get_json()
-        username = data['username']
-        password = data['password']
-        E_S_prime_b64 = data['E_S']
-
-        user = User.query.filter_by(username=username, password=password).first()
-        if not user or not user.working:
-            return jsonify({'error': 'Invalid credentials or user blocked'}), 401
-
+        # --- Step 1: Always attempt decryption first ---
+        # This will fail for any "wrong" device.
         E_S_prime = base64.b64decode(E_S_prime_b64)
         S_prime = aes_decrypt(user.E, E_S_prime)
 
+        # --- Step 2: If decryption succeeds, verify the public key ---
         key = ECC.import_key(S_prime)
         P_prime = key.public_key().export_key(format='DER')
 
         if P_prime != user.P:
+            # This means the E_S was from a valid, but older, session.
+            # It's still an invalid attempt, so block the account.
             user.working = False
             db.session.commit()
             return jsonify({'error': 'Key mismatch, user blocked'}), 400
 
+        # --- Step 3: If keys match, this is the legitimate device. ---
+        # NOW we check if the account had been previously locked.
+        if not user.working:
+            # The legitimate user is trying to log in after a lockout.
+            # This is the "Someone has your credentials!!!" scenario.
+            return jsonify({'error': 'User blocked. Someone has your credentials!!!'}), 401
+
+        # --- Step 4: All checks passed. This is a successful login. ---
+        # Proceed with generating new keys and returning the new E_S.
         new_S, new_P = generate_keypair()
         new_E = get_random_bytes(32)
         new_E_S = aes_encrypt(new_E, new_S)
@@ -112,11 +137,17 @@ def login():
         db.session.commit()
 
         return jsonify({'E_S': base64.b64encode(new_E_S).decode()})
+
     except Exception as e:
+        # --- This block now ONLY catches decryption failures ---
+        # This means it was definitively a "wrong device" attempt.
+        # We already have the 'user' object from the query above.
         user.working = False
         db.session.commit()
         traceback.print_exc()
-        return jsonify({'error': f'Decryption failed, user blocked: {e}'}), 400
+        # This is the "Decryption failed" scenario.
+        return jsonify({'error': 'Decryption failed, user blocked'}), 400
+    
 
 @app.route('/start_migration', methods=['POST'])
 def start_migration():
