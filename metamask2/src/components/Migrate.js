@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import SynclayerSDK from './sdk/synclayerSDK';
 import { openDB } from 'idb'; // Import openDB for the debug view
 
-// --- NEW: Debug View Component ---
+// --- Debug View Component ---
 // This component will read directly from IndexedDB to show you the current state.
 function DebugDbView() {
   const [dbState, setDbState] = useState({ E_S: '...', S2: '...' });
@@ -153,7 +153,8 @@ function Migrate() {
           <form onSubmit={handleSrcPinSubmit}>
             <p>Enter your username and the PIN from your new device.</p>
             <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Enter your username" disabled={isLoading} />
-            <input type="text" value={pin} onChange={(e) => setPin(e.target.value.toUpperCase())} placeholder="Enter Migration PIN" disabled={isLoading} />
+            {/* *** FIX: Removed .toUpperCase() to allow mixed-case PINs *** */}
+            <input type="text" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="Enter Migration PIN" disabled={isLoading} />
             <button type="submit" disabled={isLoading}>{isLoading ? 'Sending...' : 'Complete Migration'}</button>
             {error && <p className="error-text">{error}</p>}
             {success && <p className="success-text">{success}</p>}
