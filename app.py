@@ -239,6 +239,13 @@ def fetch_migration_data():
         traceback.print_exc()
         return jsonify({'error': f'An internal server error occurred: {e}'}), 500
 
+
+
+@app.route('/healthcheck', methods=['GET'])
+def healthcheck():
+    return jsonify({'status': 'ok'}), 200
+
+
 # ===================== Run =====================
 if __name__ == '__main__':
     with app.app_context():
