@@ -6,13 +6,14 @@ from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 import base64
 import string
-import random
 import secrets
 from datetime import datetime, timedelta, timezone
-import traceback # Import traceback for better error logging
+import traceback
+# --- NEW: Import password hashing utilities ---
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-CORS(app) # This enables CORS for all routes
+CORS(app)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'
 db = SQLAlchemy(app)
 
@@ -20,7 +21,8 @@ db = SQLAlchemy(app)
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(120), unique=True, nullable=False)
-    password = db.Column(db.String(120), nullable=False)
+    # The password column will now store a long hash, not the plain password.
+    password = db.Column(db.String(256), nullable=False)
     E = db.Column(db.LargeBinary, nullable=False)
     P = db.Column(db.LargeBinary, nullable=False)
     working = db.Column(db.Boolean, default=True)
@@ -54,13 +56,8 @@ def generate_keypair():
     return private_key, public_key
 
 def generate_pin():
-    """Generates a secure 8-character alphanumeric + special characters PIN."""
-    # Define the character set
     alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
-    
-    # Generate an 8-character PIN
     pin = ''.join(secrets.choice(alphabet) for i in range(8))
-    
     return pin
 
 # ===================== Routes =====================
@@ -78,7 +75,10 @@ def register():
         E = get_random_bytes(32)
         E_S = aes_encrypt(E, S)
 
-        user = User(username=username, password=password, E=E, P=P, working=True)
+        # --- MODIFIED: Hash the password before storing ---
+        hashed_password = generate_password_hash(password)
+        user = User(username=username, password=hashed_password, E=E, P=P, working=True)
+        
         db.session.add(user)
         db.session.commit()
 
@@ -95,39 +95,34 @@ def login():
     password = data.get('password')
     E_S_prime_b64 = data.get('E_S')
 
-    # Find the user by username and password. We need the user object for the key 'E'.
-    user = User.query.filter_by(username=username, password=password).first()
+    # --- MODIFIED: Find user by username only first ---
+    user = User.query.filter_by(username=username).first()
 
-    # If no user matches the credentials, it's a simple invalid login.
-    if not user:
+    # --- MODIFIED: Securely check password hash ---
+    # If no user or if the password hash doesn't match, it's an invalid login.
+    if not user or not check_password_hash(user.password, password):
         return jsonify({'error': 'Invalid username or password'}), 401
 
     try:
-        # --- Step 1: Always attempt decryption first ---
-        # This will fail for any "wrong" device.
+        # Step 1: Always attempt decryption first
         E_S_prime = base64.b64decode(E_S_prime_b64)
         S_prime = aes_decrypt(user.E, E_S_prime)
 
-        # --- Step 2: If decryption succeeds, verify the public key ---
+        # Step 2: If decryption succeeds, verify the public key
         key = ECC.import_key(S_prime)
         P_prime = key.public_key().export_key(format='DER')
 
         if P_prime != user.P:
-            # This means the E_S was from a valid, but older, session.
-            # It's still an invalid attempt, so block the account.
             user.working = False
             db.session.commit()
             return jsonify({'error': 'Key mismatch, user blocked'}), 400
 
-        # --- Step 3: If keys match, this is the legitimate device. ---
+        # Step 3: If keys match, this is the legitimate device.
         # NOW we check if the account had been previously locked.
         if not user.working:
-            # The legitimate user is trying to log in after a lockout.
-            # This is the "Someone has your credentials!!!" scenario.
             return jsonify({'error': 'User blocked. Someone has your credentials!!!'}), 401
 
-        # --- Step 4: All checks passed. This is a successful login. ---
-        # Proceed with generating new keys and returning the new E_S.
+        # Step 4: All checks passed. This is a successful login.
         new_S, new_P = generate_keypair()
         new_E = get_random_bytes(32)
         new_E_S = aes_encrypt(new_E, new_S)
@@ -139,13 +134,10 @@ def login():
         return jsonify({'E_S': base64.b64encode(new_E_S).decode()})
 
     except Exception as e:
-        # --- This block now ONLY catches decryption failures ---
-        # This means it was definitively a "wrong device" attempt.
-        # We already have the 'user' object from the query above.
+        # This block now ONLY catches decryption failures
         user.working = False
         db.session.commit()
         traceback.print_exc()
-        # This is the "Decryption failed" scenario.
         return jsonify({'error': 'Decryption failed, user blocked'}), 400
     
 
