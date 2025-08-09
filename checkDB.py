@@ -51,6 +51,6 @@ def check_migration_requests(username):
 
 if __name__ == "__main__":
     # Make sure to re-register this user after deleting the DB
-    username_to_check = "zak" 
+    username_to_check = "asshole1" 
     check_user_status(username_to_check)
     check_migration_requests(username_to_check)

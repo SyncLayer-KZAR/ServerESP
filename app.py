@@ -179,7 +179,14 @@ def get_migration_pubkey():
             return jsonify({'error': 'PIN is required'}), 400
 
         migration = MigrationRequest.query.filter_by(pin=pin).first()
-        if not migration or migration.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+        if not migration:
+            return jsonify({'error': 'Invalid or expired PIN'}), 404
+
+        expires_at = migration.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+        if expires_at < datetime.now(timezone.utc):
             return jsonify({'error': 'Invalid or expired PIN'}), 404
 
         return jsonify({'P2': base64.b64encode(migration.public_key).decode()})
